@@ -33,6 +33,11 @@
     .pb-safe-nav {
       padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 16px));
     }
+    input, textarea {
+      -webkit-user-select: text !important;
+      user-select: text !important;
+      caret-color: #e11d48;
+    }
   </style>
 </head>
 <body class="text-slate-800 antialiased selection:bg-rose-500 selection:text-white">
@@ -2049,7 +2054,16 @@
       },
       setSearchQuery(val) {
         state.searchQuery = val;
-        render();
+        updateExamListDomOnly();
+      },
+      clearSearchQuery() {
+        state.searchQuery = '';
+        const inputEl = document.getElementById('exam-search-input');
+        if (inputEl) {
+          inputEl.value = '';
+          inputEl.focus();
+        }
+        updateExamListDomOnly();
       },
       updateInput(field, val) {
         state[field] = val;
@@ -2698,6 +2712,127 @@
     }
 
     // C. 過去問14回分（全770問）一覧 & 解答・解説表示タブ
+    // 検索入力中に <input> 要素を再生成しないよう、問題カードリスト部分のみを部分更新する関数
+    function updateExamListDomOnly() {
+      const allQuestions = buildAllQuestions();
+      const filtered = getFilteredQuestions(allQuestions);
+      const listContainer = document.getElementById('exam-questions-list-container');
+      if (listContainer) {
+        listContainer.innerHTML = renderExamQuestionCardsHtml(filtered);
+      }
+      const countSpan = document.getElementById('filtered-quiz-btn-count');
+      if (countSpan) {
+        countSpan.textContent = `表示中の${filtered.length}問を演習`;
+      }
+      const clearBtn = document.getElementById('exam-search-clear-btn');
+      if (clearBtn) {
+        if (state.searchQuery && state.searchQuery.length > 0) {
+          clearBtn.classList.remove('hidden');
+          clearBtn.classList.add('flex');
+        } else {
+          clearBtn.classList.add('hidden');
+          clearBtn.classList.remove('flex');
+        }
+      }
+      if (window.lucide && typeof window.lucide.createIcons === 'function') {
+        window.lucide.createIcons();
+      }
+    }
+
+    function renderExamQuestionCardsHtml(filtered) {
+      if (filtered.length === 0) {
+        return `
+          <div class="bg-white rounded-2xl p-8 text-center shadow-sm border border-slate-200 space-y-2">
+            <div class="text-sm font-black text-slate-700">該当する問題が見つかりませんでした</div>
+            <p class="text-xs text-slate-500">検索キーワードや回数・学習状態フィルターを変更してお試しください。</p>
+            ${state.searchQuery ? `
+              <button type="button" onclick="window.appActions.clearSearchQuery()"
+                class="mt-2 inline-flex items-center gap-1 px-4 py-2 rounded-xl bg-rose-50 text-rose-700 font-bold text-xs border border-rose-200">
+                検索文字をクリアする
+              </button>
+            ` : ''}
+          </div>
+        `;
+      }
+      return filtered.map(q => {
+        const p = state.studentProgress[q.id];
+        const sticky = state.studentStickies[q.id];
+        const cat = CATEGORIES.find(c => c.id === q.category) || CATEGORIES[0];
+        const isExpOpen = state.showAllExplanationsInList || !!state.expandedExplanationIds[q.id];
+
+        let statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500">未着手</span>`;
+        if (p?.status === 'mastered') statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700">定着済 ○</span>`;
+        else if (p?.status === 'review') statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">要復習 ×</span>`;
+
+        return `
+          <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 hover:border-rose-300 transition space-y-2.5">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="flex flex-wrap items-center gap-1.5">
+                <span class="px-2.5 py-0.5 rounded-lg text-xs font-black bg-slate-900 text-white">第${q.session}回 問${q.questionNumber}</span>
+                <span class="px-2 py-0.5 rounded-lg text-[11px] font-bold ${cat.lightBg} ${cat.text}">${cat.name}</span>
+                ${statusBadge}
+              </div>
+              <div class="flex items-center gap-1.5">
+                ${renderPersonalAttemptBadge(q.id)}
+              </div>
+            </div>
+
+            <p class="text-sm font-bold text-slate-900 leading-relaxed whitespace-pre-line">${escapeHtml(q.question)}</p>
+
+            ${q.svgKey && QUESTION_SVGS[q.svgKey] ? `
+              <div class="my-1">${QUESTION_SVGS[q.svgKey]}</div>
+            ` : ''}
+
+            <!-- 4つの選択肢一覧 -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1">
+              ${q.options.map((opt, idx) => {
+                const isCorrectOpt = isExpOpen && ((idx === q.correctIndex) || (q.alsoCorrectIndex === idx));
+                return `
+                  <div class="px-3 py-1.5 rounded-xl border text-xs ${isCorrectOpt ? 'bg-emerald-50 border-emerald-400 text-emerald-950 font-bold' : 'bg-slate-50 border-slate-200 text-slate-700'}">
+                    <span class="font-black mr-1">(${idx + 1})</span>${escapeHtml(opt)}
+                    ${isCorrectOpt ? `<span class="ml-1 text-[10px] font-extrabold text-emerald-700 bg-emerald-100 px-1.5 py-0.2 rounded">正解</span>` : ''}
+                  </div>
+                `;
+              }).join('')}
+            </div>
+
+            ${sticky ? `
+              <div class="p-2.5 rounded-xl ${STICKY_COLORS[sticky.color]?.bg || 'bg-amber-50'} border ${STICKY_COLORS[sticky.color]?.border || 'border-amber-200'} text-xs flex items-center gap-1.5">
+                <span class="w-2 h-2 rounded-full ${STICKY_COLORS[sticky.color]?.dot || 'bg-amber-500'}"></span>
+                <span class="font-bold ${STICKY_COLORS[sticky.color]?.text || 'text-amber-800'}">${escapeHtml(sticky.memo || STICKY_COLORS[sticky.color]?.label)}</span>
+              </div>
+            ` : ''}
+
+            ${isExpOpen ? `
+              <div class="p-3.5 rounded-2xl bg-indigo-50/70 border border-indigo-200 space-y-1.5 animate-fadeIn">
+                <div class="text-xs font-black text-indigo-900 flex items-center gap-1.5">
+                  <i data-lucide="check-circle-2" class="w-4 h-4 text-indigo-600"></i> 解答・詳しい解説
+                </div>
+                <p class="text-xs text-slate-800 leading-relaxed whitespace-pre-line">${escapeHtml(q.explanation)}</p>
+              </div>
+            ` : ''}
+
+            <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
+              <div class="flex items-center gap-3">
+                <button type="button" onclick="window.appActions.toggleQuestionExplanation('${q.id}')"
+                  class="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1">
+                  <i data-lucide="help-circle" class="w-3.5 h-3.5"></i> ${isExpOpen ? '解答・解説を閉じる' : '解答・解説を見る'}
+                </button>
+                <button type="button" onclick="window.appActions.openStickyModal('${q.id}')"
+                  class="text-xs font-bold text-slate-500 hover:text-rose-600 flex items-center gap-1">
+                  <i data-lucide="bookmark" class="w-3.5 h-3.5"></i> ${sticky ? '付箋を編集' : '付箋を貼る'}
+                </button>
+              </div>
+              <button type="button" onclick="window.appActions.startQuiz('single', '${q.id}')"
+                class="px-3.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-600 text-rose-700 hover:text-white font-bold text-xs transition flex items-center gap-1">
+                この問題を解く <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
+              </button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
     function renderExamListTab(allQuestions, stats) {
       const filtered = getFilteredQuestions(allQuestions);
 
@@ -2717,7 +2852,7 @@
                 </button>
                 <button type="button" onclick="window.appActions.startQuiz('filtered_custom')"
                   class="px-4 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-sm transition flex items-center gap-1.5">
-                  <i data-lucide="play" class="w-3.5 h-3.5"></i> 表示中の${filtered.length}問を演習
+                  <i data-lucide="play" class="w-3.5 h-3.5"></i> <span id="filtered-quiz-btn-count">表示中の${filtered.length}問を演習</span>
                 </button>
               </div>
             </div>
@@ -2751,91 +2886,24 @@
                 <option value="unattempted" ${state.selectedStatusFilter === 'unattempted' ? 'selected' : ''}>未着手の問題のみ</option>
                 <option value="mastered" ${state.selectedStatusFilter === 'mastered' ? 'selected' : ''}>定着済（○）のみ</option>
               </select>
-              <input type="text" value="${escapeHtml(state.searchQuery)}" oninput="window.appActions.setSearchQuery(this.value)"
-                placeholder="キーワード検索（例：次亜塩素酸、管理美容師）"
-                class="w-full px-3.5 py-2 rounded-xl border border-slate-200 text-xs bg-slate-50 focus:bg-white focus:border-rose-500 focus:outline-none" />
+              <div class="relative flex items-center">
+                <input id="exam-search-input" type="text" inputmode="search" enterkeyhint="search" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+                  value="${escapeHtml(state.searchQuery)}"
+                  oninput="window.appActions.setSearchQuery(this.value)"
+                  placeholder="キーワード検索（例：次亜塩素酸、管理美容師）"
+                  class="w-full pl-3.5 pr-9 py-2 rounded-xl border border-slate-200 text-base sm:text-xs bg-slate-50 text-slate-900 focus:bg-white focus:border-rose-500 focus:ring-2 focus:ring-rose-200 focus:outline-none" />
+                <button id="exam-search-clear-btn" type="button" onclick="window.appActions.clearSearchQuery()"
+                  aria-label="検索文字をクリア"
+                  class="${state.searchQuery ? 'flex' : 'hidden'} absolute right-2 w-6 h-6 rounded-full bg-slate-200 hover:bg-slate-300 text-slate-600 items-center justify-center text-xs font-bold">
+                  ✕
+                </button>
+              </div>
             </div>
           </div>
 
           <!-- 問題リスト -->
-          <div class="space-y-3">
-            ${filtered.map(q => {
-              const p = state.studentProgress[q.id];
-              const sticky = state.studentStickies[q.id];
-              const cat = CATEGORIES.find(c => c.id === q.category) || CATEGORIES[0];
-              const isExpOpen = state.showAllExplanationsInList || !!state.expandedExplanationIds[q.id];
-
-              let statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-500">未着手</span>`;
-              if (p?.status === 'mastered') statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-700">定着済 ○</span>`;
-              else if (p?.status === 'review') statusBadge = `<span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">要復習 ×</span>`;
-
-              return `
-                <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200 hover:border-rose-300 transition space-y-2.5">
-                  <div class="flex flex-wrap items-center justify-between gap-2">
-                    <div class="flex flex-wrap items-center gap-1.5">
-                      <span class="px-2.5 py-0.5 rounded-lg text-xs font-black bg-slate-900 text-white">第${q.session}回 問${q.questionNumber}</span>
-                      <span class="px-2 py-0.5 rounded-lg text-[11px] font-bold ${cat.lightBg} ${cat.text}">${cat.name}</span>
-                      ${statusBadge}
-                    </div>
-                    <div class="flex items-center gap-1.5">
-                      ${renderPersonalAttemptBadge(q.id)}
-                    </div>
-                  </div>
-
-                  <p class="text-sm font-bold text-slate-900 leading-relaxed whitespace-pre-line">${escapeHtml(q.question)}</p>
-
-                  ${q.svgKey && QUESTION_SVGS[q.svgKey] ? `
-                    <div class="my-1">${QUESTION_SVGS[q.svgKey]}</div>
-                  ` : ''}
-
-                  <!-- 4つの選択肢一覧 -->
-                  <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-1">
-                    ${q.options.map((opt, idx) => {
-                      const isCorrectOpt = isExpOpen && ((idx === q.correctIndex) || (q.alsoCorrectIndex === idx));
-                      return `
-                        <div class="px-3 py-1.5 rounded-xl border text-xs ${isCorrectOpt ? 'bg-emerald-50 border-emerald-400 text-emerald-950 font-bold' : 'bg-slate-50 border-slate-200 text-slate-700'}">
-                          <span class="font-black mr-1">(${idx + 1})</span>${escapeHtml(opt)}
-                          ${isCorrectOpt ? `<span class="ml-1 text-[10px] font-extrabold text-emerald-700 bg-emerald-100 px-1.5 py-0.2 rounded">正解</span>` : ''}
-                        </div>
-                      `;
-                    }).join('')}
-                  </div>
-
-                  ${sticky ? `
-                    <div class="p-2.5 rounded-xl ${STICKY_COLORS[sticky.color]?.bg || 'bg-amber-50'} border ${STICKY_COLORS[sticky.color]?.border || 'border-amber-200'} text-xs flex items-center gap-1.5">
-                      <span class="w-2 h-2 rounded-full ${STICKY_COLORS[sticky.color]?.dot || 'bg-amber-500'}"></span>
-                      <span class="font-bold ${STICKY_COLORS[sticky.color]?.text || 'text-amber-800'}">${escapeHtml(sticky.memo || STICKY_COLORS[sticky.color]?.label)}</span>
-                    </div>
-                  ` : ''}
-
-                  ${isExpOpen ? `
-                    <div class="p-3.5 rounded-2xl bg-indigo-50/70 border border-indigo-200 space-y-1.5 animate-fadeIn">
-                      <div class="text-xs font-black text-indigo-900 flex items-center gap-1.5">
-                        <i data-lucide="check-circle-2" class="w-4 h-4 text-indigo-600"></i> 解答・詳しい解説
-                      </div>
-                      <p class="text-xs text-slate-800 leading-relaxed whitespace-pre-line">${escapeHtml(q.explanation)}</p>
-                    </div>
-                  ` : ''}
-
-                  <div class="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-slate-100">
-                    <div class="flex items-center gap-3">
-                      <button type="button" onclick="window.appActions.toggleQuestionExplanation('${q.id}')"
-                        class="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1">
-                        <i data-lucide="help-circle" class="w-3.5 h-3.5"></i> ${isExpOpen ? '解答・解説を閉じる' : '解答・解説を見る'}
-                      </button>
-                      <button type="button" onclick="window.appActions.openStickyModal('${q.id}')"
-                        class="text-xs font-bold text-slate-500 hover:text-rose-600 flex items-center gap-1">
-                        <i data-lucide="bookmark" class="w-3.5 h-3.5"></i> ${sticky ? '付箋を編集' : '付箋を貼る'}
-                      </button>
-                    </div>
-                    <button type="button" onclick="window.appActions.startQuiz('single', '${q.id}')"
-                      class="px-3.5 py-1.5 rounded-xl bg-rose-50 hover:bg-rose-600 text-rose-700 hover:text-white font-bold text-xs transition flex items-center gap-1">
-                      この問題を解く <i data-lucide="chevron-right" class="w-3.5 h-3.5"></i>
-                    </button>
-                  </div>
-                </div>
-              `;
-            }).join('')}
+          <div id="exam-questions-list-container" class="space-y-3">
+            ${renderExamQuestionCardsHtml(filtered)}
           </div>
         </div>
       `;
@@ -3531,7 +3599,29 @@
         </div>
       ` : '';
 
+      const activeEl = document.activeElement;
+      const activeId = activeEl && activeEl.id ? activeEl.id : null;
+      let selStart = null, selEnd = null;
+      if (activeId && (activeEl.tagName === 'INPUT' || activeEl.tagName === 'TEXTAREA')) {
+        try {
+          selStart = activeEl.selectionStart;
+          selEnd = activeEl.selectionEnd;
+        } catch (e) {}
+      }
+
       appEl.innerHTML = contentHtml + renderModals() + toastHtml;
+
+      if (activeId) {
+        const nextEl = document.getElementById(activeId);
+        if (nextEl) {
+          try {
+            nextEl.focus({ preventScroll: true });
+            if (selStart !== null && selEnd !== null && typeof nextEl.setSelectionRange === 'function') {
+              nextEl.setSelectionRange(selStart, selEnd);
+            }
+          } catch (e) {}
+        }
+      }
 
       if (window.lucide && typeof window.lucide.createIcons === 'function') {
         window.lucide.createIcons();
