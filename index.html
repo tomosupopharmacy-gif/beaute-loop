@@ -50,6 +50,7 @@
     //    ログイン不要・各個人のスマホブラウザに自動保存し、何周でも反復可能
     // =========================================================
     const LOCAL_STORAGE_KEY = 'beaute_loop_personal_v4_14sessions';
+    const MIN_PASS_JUDGMENT_QUESTIONS = 55; // 少なくとも55問解かないと合格可能性は判定しない
 
     const state = {
       activeTab: 'dashboard', // 'dashboard' | 'exam' | 'stickies' | 'analytics' | 'pdfs'
@@ -63,6 +64,10 @@
       examLogs: [],
       // 弱点ループ完走回数（間違えた問題ループを最後まで解き切った回数）
       completedReviewLoops: 0,
+      // 5科目別ループ・過去問14回分ループの「前回の続き」位置保存 { 'cat_law': index, 'ses_54': index, ... }
+      lastCursors: {},
+      // 今日の15問（デイリーおすすめメニュー）保存 { dateKey: 'YYYY-MM-DD', questionIds: [], completedIds: [], setNumber: 1 }
+      dailyMission: null,
 
       // フィルター・表示設定
       selectedSessionFilter: '54',
@@ -97,6 +102,8 @@
             if (parsed.studentStickies) state.studentStickies = parsed.studentStickies;
             if (Array.isArray(parsed.examLogs)) state.examLogs = parsed.examLogs;
             if (typeof parsed.completedReviewLoops === 'number') state.completedReviewLoops = parsed.completedReviewLoops;
+            if (parsed.lastCursors && typeof parsed.lastCursors === 'object') state.lastCursors = parsed.lastCursors;
+            if (parsed.dailyMission && typeof parsed.dailyMission === 'object') state.dailyMission = parsed.dailyMission;
           }
         } else {
           // 旧バージョン(v3)からのデータ引き継ぎサポート
@@ -125,6 +132,8 @@
           studentStickies: state.studentStickies,
           examLogs: state.examLogs,
           completedReviewLoops: state.completedReviewLoops,
+          lastCursors: state.lastCursors,
+          dailyMission: state.dailyMission,
           updatedAt: Date.now()
         }));
       } catch (e) {
@@ -1849,53 +1858,86 @@
     }
 
     // =========================================================
-    // 6. 学生個人の成績カルテ＆合格可能性判定ロジック
+    // 6. 学生個人の成績カルテ＆合格可能性判定ロジック（55問以上解答で判定解放）
     // =========================================================
-    function evaluatePassCriteria(overallAccuracy, mastered, totalAttempts, zeroScoreCategoryCount, weakCategoryCount) {
-      if (totalAttempts === 0) {
+    function evaluatePassCriteria(overallAccuracy, mastered, totalAttempts, zeroScoreCategoryCount, weakCategoryCount, attemptedQuestions) {
+      const solvedCount = attemptedQuestions || 0;
+      if (solvedCount < MIN_PASS_JUDGMENT_QUESTIONS) {
+        const remainingForJudgment = Math.max(1, MIN_PASS_JUDGMENT_QUESTIONS - solvedCount);
+        const judgmentProgressPct = Math.min(99, Math.round((solvedCount / MIN_PASS_JUDGMENT_QUESTIONS) * 100));
         return {
-          passGrade: '未判定（演習前）',
-          passProbability: 20,
-          passComment: 'まだ演習履歴がありません。まずは過去問や科目別ループを解いて、あなたの合格可能性を診断しましょう！',
+          isPassJudged: false,
+          remainingForJudgment,
+          judgmentProgressPct,
+          passGrade: 'まだ問題数が少ないです',
+          passGradeSub: `あと${remainingForJudgment}問で合格判定（現在${solvedCount}/${MIN_PASS_JUDGMENT_QUESTIONS}問）`,
+          passProbability: null,
+          passProbabilityDisplay: '判定保留',
+          passComment: `まだ解いた問題数が少ないため合格可能性は判定できません（少なくとも本試験1回分にあたる55問以上の解答が必要です）。現在 ${solvedCount} / 55問 解いています。あと ${remainingForJudgment}問 解くとあなたの合格判定が解放されます！まずはホームの「今日の15問」や過去問ループから解き進めましょう！`,
           passBadgeColor: 'bg-slate-600',
           passTextColor: 'text-slate-600'
         };
-      } else if (overallAccuracy >= 80 && mastered >= 30 && zeroScoreCategoryCount === 0 && weakCategoryCount === 0) {
+      } else if (overallAccuracy >= 80 && mastered >= 40 && zeroScoreCategoryCount === 0 && weakCategoryCount === 0) {
         return {
+          isPassJudged: true,
+          remainingForJudgment: 0,
+          judgmentProgressPct: 100,
           passGrade: 'S判定（合格安全圏）',
+          passGradeSub: '合格可能性 96%',
           passProbability: 96,
+          passProbabilityDisplay: '96%',
           passComment: '全科目とも合格基準(60%)を大きく上回っています！「過去に間違えた問題ループ」で知識の抜け漏れをゼロに保ちましょう。',
           passBadgeColor: 'bg-emerald-600',
           passTextColor: 'text-emerald-600'
         };
       } else if (overallAccuracy >= 70 && zeroScoreCategoryCount === 0) {
         return {
+          isPassJudged: true,
+          remainingForJudgment: 0,
+          judgmentProgressPct: 100,
           passGrade: 'A判定（合格有望圏）',
+          passGradeSub: '合格可能性 85%',
           passProbability: 85,
+          passProbabilityDisplay: '85%',
           passComment: '国家試験の合格ライン(60%)を安定してクリアしています！間違えた問題の復習ループをもう1〜2周回せばS判定に到達します。',
           passBadgeColor: 'bg-teal-600',
           passTextColor: 'text-teal-600'
         };
       } else if (overallAccuracy >= 60 && zeroScoreCategoryCount === 0) {
         return {
+          isPassJudged: true,
+          remainingForJudgment: 0,
+          judgmentProgressPct: 100,
           passGrade: 'B判定（合格基準到達）',
+          passGradeSub: '合格可能性 68%',
           passProbability: 68,
+          passProbabilityDisplay: '68%',
           passComment: '国家試験の合格基準(60%)に到達しています！本番で確実に合格できるよう、正答率70%未満の科目を中心にループ演習を重ねましょう。',
           passBadgeColor: 'bg-blue-600',
           passTextColor: 'text-blue-600'
         };
       } else if (overallAccuracy >= 48) {
         return {
+          isPassJudged: true,
+          remainingForJudgment: 0,
+          judgmentProgressPct: 100,
           passGrade: 'C判定（あと一歩）',
+          passGradeSub: '合格可能性 45%',
           passProbability: 45,
+          passProbabilityDisplay: '45%',
           passComment: `合格基準(60%)まであと+${Math.max(1, 60 - overallAccuracy)}%です！「要復習ループ」で間違えた問題の解説を読み込み、何周も反復して定着させましょう。`,
           passBadgeColor: 'bg-amber-500',
           passTextColor: 'text-amber-600'
         };
       } else {
         return {
+          isPassJudged: true,
+          remainingForJudgment: 0,
+          judgmentProgressPct: 100,
           passGrade: 'D判定（基礎強化期）',
+          passGradeSub: '合格可能性 25%',
           passProbability: 25,
+          passProbabilityDisplay: '25%',
           passComment: '伸びしろがたくさんあります！まずは各問題の「解答・解説」をじっくり読み、付箋メモと「要復習ループ」で1問ずつ正解を増やしましょう。',
           passBadgeColor: 'bg-rose-600',
           passTextColor: 'text-rose-600'
@@ -1909,12 +1951,12 @@
 
       const categoryStats = {};
       CATEGORIES.forEach(c => {
-        categoryStats[c.id] = { total: 0, mastered: 0, review: 0, unattempted: 0, everWrong: 0, attempts: 0, correct: 0, accuracy: 0 };
+        categoryStats[c.id] = { total: 0, mastered: 0, review: 0, attempted: 0, attemptedPct: 0, masteredPct: 0, unattempted: 0, everWrong: 0, attempts: 0, correct: 0, accuracy: 0 };
       });
 
       const sessionStats = {};
       EXAM_PDF_LIST.forEach(e => {
-        sessionStats[e.session] = { total: 0, mastered: 0, review: 0, unattempted: 0, attempts: 0, correct: 0, accuracy: 0 };
+        sessionStats[e.session] = { total: 0, mastered: 0, review: 0, attempted: 0, attemptedPct: 0, masteredPct: 0, unattempted: 0, everWrong: 0, attempts: 0, correct: 0, accuracy: 0 };
       });
 
       allQuestions.forEach(q => {
@@ -1939,15 +1981,18 @@
           if (cat) {
             cat.attempts += att;
             cat.correct += cor;
+            cat.attempted++;
           }
           if (ses) {
             ses.attempts += att;
             ses.correct += cor;
+            ses.attempted++;
           }
 
           if (wrg > 0) {
             everWrong++;
             if (cat) cat.everWrong++;
+            if (ses) ses.everWrong++;
           }
 
           if (p.status === 'mastered') {
@@ -1967,6 +2012,8 @@
       CATEGORIES.forEach(c => {
         const cs = categoryStats[c.id];
         cs.accuracy = cs.attempts > 0 ? Math.round((cs.correct / cs.attempts) * 100) : 0;
+        cs.attemptedPct = cs.total > 0 ? Math.round((cs.attempted / cs.total) * 100) : 0;
+        cs.masteredPct = cs.total > 0 ? Math.round((cs.mastered / cs.total) * 100) : 0;
         if (cs.attempts > 0 && cs.correct === 0) zeroScoreCategoryCount++;
         if (cs.attempts > 0 && cs.accuracy < 60) weakCategoryCount++;
       });
@@ -1974,19 +2021,23 @@
       EXAM_PDF_LIST.forEach(e => {
         const ss = sessionStats[e.session];
         ss.accuracy = ss.attempts > 0 ? Math.round((ss.correct / ss.attempts) * 100) : 0;
+        ss.attemptedPct = ss.total > 0 ? Math.round((ss.attempted / ss.total) * 100) : 0;
+        ss.masteredPct = ss.total > 0 ? Math.round((ss.mastered / ss.total) * 100) : 0;
       });
 
       const totalQuestions = allQuestions.length;
       const attemptedQuestions = mastered + review;
+      const attemptedRate = totalQuestions > 0 ? Math.round((attemptedQuestions / totalQuestions) * 100) : 0;
       const masteryRate = totalQuestions > 0 ? Math.round((mastered / totalQuestions) * 100) : 0;
       const overallAccuracy = totalAttempts > 0 ? Math.round((totalCorrect / totalAttempts) * 100) : 0;
       const stickyCount = Object.keys(state.studentStickies).length;
 
-      const passEval = evaluatePassCriteria(overallAccuracy, mastered, totalAttempts, zeroScoreCategoryCount, weakCategoryCount);
+      const passEval = evaluatePassCriteria(overallAccuracy, mastered, totalAttempts, zeroScoreCategoryCount, weakCategoryCount, attemptedQuestions);
 
       return {
         totalQuestions,
         attemptedQuestions,
+        attemptedRate,
         mastered,
         review,
         everWrong,
@@ -2002,6 +2053,385 @@
         weakCategoryCount,
         ...passEval
       };
+    }
+
+    // =========================================================
+    // 6B. 「前回の続きから再開」位置計算ヘルパー（5科目別 ＆ 過去問14回分）
+    // =========================================================
+    function getResumeInfoForSet(cursorKey, questions) {
+      if (!questions || questions.length === 0) {
+        return { resumeIndex: 0, hasResume: false, resumeQuestion: null };
+      }
+      let savedIdx = state.lastCursors && typeof state.lastCursors[cursorKey] === 'number'
+        ? state.lastCursors[cursorKey]
+        : null;
+
+      if (savedIdx !== null && savedIdx > 0 && savedIdx < questions.length) {
+        return {
+          resumeIndex: savedIdx,
+          hasResume: true,
+          resumeQuestion: questions[savedIdx]
+        };
+      }
+
+      // カーソル未保存でも、途中まで解いている場合は「最初の未着手問題」または「最後に解いた次の問題」を自動検出
+      let hasAnyAnswered = false;
+      let lastAnsweredIdx = -1;
+      let firstUnattemptedIdx = -1;
+      for (let i = 0; i < questions.length; i++) {
+        const p = state.studentProgress[questions[i].id];
+        if (p && p.attempts > 0) {
+          hasAnyAnswered = true;
+          lastAnsweredIdx = i;
+        } else if (firstUnattemptedIdx === -1) {
+          firstUnattemptedIdx = i;
+        }
+      }
+
+      if (hasAnyAnswered) {
+        if (lastAnsweredIdx + 1 < questions.length) {
+          const nextIdx = lastAnsweredIdx + 1;
+          return {
+            resumeIndex: nextIdx,
+            hasResume: nextIdx > 0,
+            resumeQuestion: questions[nextIdx]
+          };
+        } else if (firstUnattemptedIdx > 0) {
+          return {
+            resumeIndex: firstUnattemptedIdx,
+            hasResume: true,
+            resumeQuestion: questions[firstUnattemptedIdx]
+          };
+        }
+      }
+
+      return { resumeIndex: 0, hasResume: false, resumeQuestion: questions[0] };
+    }
+
+    // =========================================================
+    // 6C. 「今日の15問（今日解くべきおすすめ問題）」自動キュレーション＆進捗管理
+    // =========================================================
+    function getTodayDateKey() {
+      const now = new Date();
+      const y = now.getFullYear();
+      const m = String(now.getMonth() + 1).padStart(2, '0');
+      const d = String(now.getDate()).padStart(2, '0');
+      return `${y}-${m}-${d}`;
+    }
+
+    function buildDailyMissionQuestionIds(allQuestions, seedOffset) {
+      const pickedIds = [];
+      const pickedSet = new Set();
+      const addQ = (q) => {
+        if (q && !pickedSet.has(q.id) && pickedIds.length < 15) {
+          pickedSet.add(q.id);
+          pickedIds.push(q.id);
+        }
+      };
+
+      // 1. 直近で間違えている「要復習」問題を最優先で最大5問ピックアップ
+      const reviewQs = allQuestions.filter(q => state.studentProgress[q.id]?.status === 'review');
+      reviewQs.slice(0, 5).forEach(addQ);
+
+      // 2. 付箋を貼った問題または過去に間違えた問題を最大3問ピックアップ
+      const stickyOrEverWrongQs = allQuestions.filter(q => {
+        if (pickedSet.has(q.id)) return false;
+        const st = state.studentStickies[q.id];
+        const p = state.studentProgress[q.id];
+        const wrg = p ? (p.wrongCount !== undefined ? p.wrongCount : Math.max(0, (p.attempts || 0) - (p.correctCount || 0))) : 0;
+        return !!st || wrg > 0;
+      });
+      stickyOrEverWrongQs.slice(0, 3).forEach(addQ);
+
+      // 3. 残りは「未着手問題」から5科目がバランスよく入るように順番にピックアップ
+      const unattemptedByCat = {};
+      CATEGORIES.forEach(c => {
+        unattemptedByCat[c.id] = allQuestions.filter(q => !pickedSet.has(q.id) && q.category === c.id && (!state.studentProgress[q.id] || !state.studentProgress[q.id].attempts));
+      });
+
+      let round = seedOffset || 0;
+      let safety = 0;
+      while (pickedIds.length < 15 && safety < 100) {
+        safety++;
+        let addedInPass = false;
+        for (let ci = 0; ci < CATEGORIES.length; ci++) {
+          const catId = CATEGORIES[ci].id;
+          const list = unattemptedByCat[catId];
+          if (list && list.length > 0) {
+            const idx = round % list.length;
+            const candidate = list.splice(idx, 1)[0];
+            addQ(candidate);
+            addedInPass = true;
+            if (pickedIds.length >= 15) break;
+          }
+        }
+        round++;
+        if (!addedInPass) break;
+      }
+
+      // 4. もし未着手だけでは15問に満たない場合（全問解答済みなど）、解答日が古い問題から補充
+      if (pickedIds.length < 15) {
+        const remaining = allQuestions
+          .filter(q => !pickedSet.has(q.id))
+          .sort((a, b) => (state.studentProgress[a.id]?.lastAnsweredAt || 0) - (state.studentProgress[b.id]?.lastAnsweredAt || 0));
+        remaining.forEach(addQ);
+      }
+
+      return pickedIds;
+    }
+
+    function ensureDailyMission(allQuestions, forceNewSet) {
+      const todayKey = getTodayDateKey();
+      const qMap = {};
+      allQuestions.forEach(q => { qMap[q.id] = q; });
+
+      if (
+        !forceNewSet &&
+        state.dailyMission &&
+        state.dailyMission.dateKey === todayKey &&
+        Array.isArray(state.dailyMission.questionIds) &&
+        state.dailyMission.questionIds.length > 0 &&
+        state.dailyMission.questionIds.every(id => !!qMap[id])
+      ) {
+        if (!Array.isArray(state.dailyMission.completedIds)) {
+          state.dailyMission.completedIds = [];
+        }
+        return state.dailyMission;
+      }
+
+      const nextSetNum = (forceNewSet && state.dailyMission && state.dailyMission.dateKey === todayKey)
+        ? ((state.dailyMission.setNumber || 1) + 1)
+        : 1;
+      const questionIds = buildDailyMissionQuestionIds(allQuestions, nextSetNum - 1);
+      state.dailyMission = {
+        dateKey: todayKey,
+        questionIds,
+        completedIds: [],
+        setNumber: nextSetNum
+      };
+      savePersonalData();
+      return state.dailyMission;
+    }
+
+    function getTodays15Summary(allQuestions) {
+      const mission = ensureDailyMission(allQuestions, false);
+      const qMap = {};
+      allQuestions.forEach(q => { qMap[q.id] = q; });
+
+      const questions = mission.questionIds.map(id => qMap[id]).filter(Boolean);
+      const completedSet = new Set(mission.completedIds || []);
+
+      let reviewCount = 0;
+      let stickyOrPastWrongCount = 0;
+      let freshCount = 0;
+      questions.forEach(q => {
+        const p = state.studentProgress[q.id];
+        const wrg = p ? (p.wrongCount !== undefined ? p.wrongCount : Math.max(0, (p.attempts || 0) - (p.correctCount || 0))) : 0;
+        if (p?.status === 'review') reviewCount++;
+        else if (state.studentStickies[q.id] || wrg > 0) stickyOrPastWrongCount++;
+        else freshCount++;
+      });
+
+      const doneCount = questions.filter(q => completedSet.has(q.id)).length;
+      const totalCount = questions.length || 15;
+      const progressPct = Math.round((doneCount / totalCount) * 100);
+      const firstUnfinishedIdx = questions.findIndex(q => !completedSet.has(q.id));
+      const resumeIdx = firstUnfinishedIdx >= 0 ? firstUnfinishedIdx : 0;
+
+      const now = new Date();
+      const dateLabel = `${now.getMonth() + 1}月${now.getDate()}日`;
+
+      return {
+        dateLabel,
+        setNumber: mission.setNumber || 1,
+        questions,
+        doneCount,
+        totalCount,
+        progressPct,
+        isAllDone: doneCount >= totalCount,
+        resumeIdx,
+        reviewCount,
+        stickyOrPastWrongCount,
+        freshCount
+      };
+    }
+
+    // =========================================================
+    // 6D. キリのいいところでの褒め言葉・モチベーション応援メッセージ生成
+    // =========================================================
+    function getDashboardPraiseMessage(stats, todays15) {
+      if (todays15 && todays15.isAllDone) {
+        return {
+          badge: '🎊 今日の15問 完走達成！',
+          title: '今日の目標15問をすべて解き切りました！素晴らしい継続力です！',
+          body: '毎日の積み重ねが国家試験合格への一番の近道です。余力があれば「おかわり15問」や苦手科目の続きにも挑戦してみましょう！',
+          theme: 'from-emerald-600 to-teal-600 text-white'
+        };
+      }
+      if (stats.attemptedQuestions >= 770) {
+        return {
+          badge: '👑 全14回・770問 コンプリート！',
+          title: '過去問14回分・全770問すべてに解答しました！圧倒的な努力です！',
+          body: 'ここからは「要復習ループ」と「過去ミス徹底ループ」で正答率をさらに高め、本番で満点を目指しましょう！',
+          theme: 'from-amber-500 to-rose-600 text-white'
+        };
+      }
+      if (stats.attemptedQuestions >= 500) {
+        return {
+          badge: '🏆 累計500問突破！',
+          title: `すでに${stats.attemptedQuestions}問を突破！全770問制覇が目前に見えてきました！`,
+          body: 'これだけの問題数を解き進めた経験は大きな自信になります。残りの未着手問題もこのペースで埋め尽くしましょう！',
+          theme: 'from-indigo-600 to-purple-600 text-white'
+        };
+      }
+      if (stats.attemptedQuestions >= 300) {
+        return {
+          badge: '🌟 累計300問突破！',
+          title: `${stats.attemptedQuestions}問クリア！過去問14回分の約半分を攻略しています！`,
+          body: '出題パターンがしっかり頭に入ってきている時期です。棒グラフが100%になる回を1つずつ増やしていきましょう！',
+          theme: 'from-sky-600 to-indigo-600 text-white'
+        };
+      }
+      if (stats.attemptedQuestions >= 100) {
+        return {
+          badge: '🔥 累計100問突破！',
+          title: `累計${stats.attemptedQuestions}問を達成！順調に学習ペースが掴めています！`,
+          body: '100問以上解いたことで得意・不得意がはっきり見えてきました。間違えた問題をループして定着率をさらに伸ばしましょう！',
+          theme: 'from-rose-600 to-pink-600 text-white'
+        };
+      }
+      if (stats.attemptedQuestions >= 55) {
+        return {
+          badge: '🎉 累計55問突破・合格判定解放！',
+          title: '本試験1回分（55問）以上を解き切り、合格可能性の判定が解放されました！',
+          body: `現在の累計解答数は ${stats.attemptedQuestions}問 です！次は累計100問突破を目指して「今日の15問」や「続きから再開」を進めましょう！`,
+          theme: 'from-emerald-600 to-teal-600 text-white'
+        };
+      }
+      if (stats.attemptedQuestions >= 15) {
+        return {
+          badge: '✨ ナイススタート！',
+          title: `現在 ${stats.attemptedQuestions}問 解き進めています！いいリズムです！`,
+          body: `あと ${Math.max(1, 55 - stats.attemptedQuestions)}問 解くと「合格可能性判定」が解放されます。まずは55問突破を目指して楽しく解き進めましょう！`,
+          theme: 'from-amber-500 to-orange-500 text-white'
+        };
+      }
+      return {
+        badge: '🌱 まずは今日の15問から！',
+        title: '1日15問・スキマ時間の反復で国家試験合格を掴み取りましょう！',
+        body: '5問・10問・15問などキリのいいところまで進むたびに達成メッセージが表示されます。まずは下の「今日の15問」からスタート！',
+        theme: 'from-slate-800 to-slate-900 text-white'
+      };
+    }
+
+    function evaluateQuizPraiseMilestone(qs, isCorrect, stats) {
+      const answeredCount = Object.keys(qs.answers).length;
+      const correctInSession = Object.values(qs.answers).filter(a => a.isCorrect).length;
+      const totalInSession = qs.questions.length;
+      const totalSolvedOverall = stats.attemptedQuestions;
+
+      // 1. 累計55問に初めて到達した瞬間（合格判定解放！）
+      if (totalSolvedOverall === MIN_PASS_JUDGMENT_QUESTIONS) {
+        return {
+          badge: '🎊 祝・累計55問達成！合格判定が解放されました！',
+          title: '本試験1回分（55問）の演習を達成！素晴らしい頑張りです！',
+          message: `これで「成績カルテ」とホーム画面にあなたの合格可能性（${stats.passGrade}・${stats.passProbability}%）が表示されるようになりました！`,
+          colorClass: 'from-emerald-600 to-teal-600 text-white'
+        };
+      }
+
+      // 2. 累計の大台マイルストーン（100, 150, 200, 300, 400, 500, 600, 700, 770問）
+      const overallMilestones = [30, 100, 150, 200, 250, 300, 400, 500, 600, 700, 770];
+      if (overallMilestones.includes(totalSolvedOverall)) {
+        return {
+          badge: `🏆 累計${totalSolvedOverall}問 達成！`,
+          title: `コツコツ積み重ねて累計${totalSolvedOverall}問に到達しました！本当にすごいです！`,
+          message: `全770問のうち${totalSolvedOverall}問（${Math.round((totalSolvedOverall / 770) * 100)}%）に着手しました。あなたの努力は確実に合格へ繋がっています！`,
+          colorClass: 'from-indigo-600 to-purple-600 text-white'
+        };
+      }
+
+      // 3. セッション内のキリのいい問題数（5問、10問、15問、20問、25問、30問、35問、40問、45問、50問、または全問完走）
+      if (answeredCount === totalInSession && totalInSession >= 5) {
+        return {
+          badge: `🎉 ${totalInSession}問 完走おめでとうございます！`,
+          title: `このセットの${totalInSession}問を最後まで解き切りました！見事な集中力です！`,
+          message: `今回の正答数は ${correctInSession}/${totalInSession}問 です。「結果と全問解説を見る」から振り返りを行いましょう！`,
+          colorClass: 'from-rose-600 to-pink-600 text-white'
+        };
+      }
+
+      const sessionPraiseMap = {
+        5: {
+          badge: '✨ 5問突破！ナイススタート！',
+          title: 'まずは5問クリア！とても良いリズムで解き進められています👏',
+          message: 'この調子で次の10問目までテンポよく進めていきましょう！'
+        },
+        10: {
+          badge: '🌟 10問突破！集中力が冴えています！',
+          title: '10問達成！知識の引き出しがスムーズに動いていますね！',
+          message: '解説のポイントも目を通しておくと、2周目の正答率がグッと上がります！'
+        },
+        15: {
+          badge: '🎊 15問達成！今日の目標ペースクリア！',
+          title: 'キリのいい15問まで到達しました！毎日の積み重ねとして最高のペースです！',
+          message: 'ここで一息ついても、さらに20問・30問へ進んでもOKです。「続きから」いつでも再開できます！'
+        },
+        20: {
+          badge: '🔥 20問突破！素晴らしい持続力！',
+          title: '20問クリア！1回の学習でここまで進められるのは大きな強みです！',
+          message: '棒グラフの達成度もどんどん伸びています。その調子で突き進みましょう！'
+        },
+        25: {
+          badge: '💪 25問突破！折り返し地点が見えてきました！',
+          title: '25問達成！長丁場の演習でも集中が切れていません、お見事です！',
+          message: '間違えた問題は自動で「要復習」に入るので、恐れずどんどん解答しましょう！'
+        },
+        30: {
+          badge: '🚀 30問突破！半分以上をクリアしました！',
+          title: '30問達成！本番の試験時間でも余裕を持てる処理スピードが身についています！',
+          message: 'ここまで来たら40問・55問完走も射程圏内です。自分のペースで進めましょう！'
+        },
+        35: {
+          badge: '🌈 35問突破！着実にゴールへ近づいています！',
+          title: '35問クリア！粘り強く問題に向き合う姿勢が本当に素晴らしいです！',
+          message: '美容技術理論や香粧品化学の後半問題も、解説を活用して得点源にしていきましょう！'
+        },
+        40: {
+          badge: '🏅 40問突破！終盤戦に突入！',
+          title: '40問達成！かなりの問題量をこなせています、自信を持ってください！',
+          message: 'あと15問で1回分（55問）完走です。一歩ずつ着実に埋めましょう！'
+        },
+        45: {
+          badge: '⚡ 45問突破！ラストスパート！',
+          title: '45問クリア！ゴールまであと10問、素晴らしい集中力です！',
+          message: '最後まで解き切ると達成感もひとしおです。あと少し頑張りましょう！'
+        },
+        50: {
+          badge: '👑 50問突破！完走まであと5問！',
+          title: '50問達成！ここまでやり抜く力は国家試験本番で最大の武器になります！',
+          message: 'ラスト5問、気持ちよく解き切って100%達成バーを完成させましょう！'
+        }
+      };
+
+      if (sessionPraiseMap[answeredCount]) {
+        return {
+          ...sessionPraiseMap[answeredCount],
+          colorClass: 'from-amber-500 to-rose-500 text-white'
+        };
+      }
+
+      // 4. 連続正解ストリーク（5連勝、10連勝、15連勝）
+      if (isCorrect && (qs.sessionStreak === 5 || qs.sessionStreak === 10 || qs.sessionStreak === 15 || qs.sessionStreak === 20)) {
+        return {
+          badge: `🔥 ${qs.sessionStreak}問連続正解中！`,
+          title: `すごい！${qs.sessionStreak}問連続で正解しています！`,
+          message: '正確な知識がしっかり定着しています。この勢いのまま次の問題も攻略しましょう！',
+          colorClass: 'from-emerald-500 to-teal-600 text-white'
+        };
+      }
+
+      return null;
     }
 
     // 問題の個人学習履歴バッジ（何周目・何回正解・何回ミスかを表示）
@@ -2077,20 +2507,50 @@
         render();
       },
 
+      // 今日の15問を新しい15問セットに入れ替える（おかわり15問）
+      refreshTodays15() {
+        const allQ = buildAllQuestions();
+        ensureDailyMission(allQ, true);
+        showToast('新しい「今日の15問」セットを作成しました！');
+        render();
+      },
+
       // =====================================================
-      // 演習スタート（何回でもループ復習可能）
+      // 演習スタート（前回の続きから再開 ＆ 今日の15問 ＆ 何周でもループ復習対応）
+      // startOption: 'resume' (デフォルト: 続きがあれば続きから) | 'from_start' (問1から)
       // =====================================================
-      startQuiz(mode, filterValue) {
+      startQuiz(mode, filterValue, startOption = 'resume') {
         const allQ = buildAllQuestions();
         let targetQuestions = [];
         let title = '';
         let sessionLabel = '';
+        let cursorKey = null;
+        let initialIndex = 0;
 
-        if (mode === 'session_all') {
+        if (mode === 'todays_15') {
+          const t15 = getTodays15Summary(allQ);
+          targetQuestions = t15.questions;
+          title = `今日の15問（${t15.dateLabel} おすすめセット${t15.setNumber > 1 ? ` #${t15.setNumber}` : ''}）`;
+          sessionLabel = '今日の15問';
+          if (startOption !== 'from_start' && t15.resumeIdx > 0 && t15.resumeIdx < targetQuestions.length) {
+            initialIndex = t15.resumeIdx;
+          }
+        } else if (mode === 'session_all') {
           const sesNum = Number(filterValue);
+          cursorKey = `ses_${sesNum}`;
           targetQuestions = allQ.filter(q => q.session === sesNum).sort((a, b) => a.questionNumber - b.questionNumber);
           title = `第${sesNum}回 国家試験 全${targetQuestions.length}問演習`;
           sessionLabel = `第${sesNum}回`;
+          if (startOption === 'from_start') {
+            state.lastCursors[cursorKey] = 0;
+            savePersonalData();
+            initialIndex = 0;
+          } else {
+            const resumeInfo = getResumeInfoForSet(cursorKey, targetQuestions);
+            if (resumeInfo.hasResume) {
+              initialIndex = resumeInfo.resumeIndex;
+            }
+          }
         } else if (mode === 'session_wrong') {
           const sesNum = Number(filterValue);
           targetQuestions = allQ.filter(q => {
@@ -2104,9 +2564,20 @@
           sessionLabel = `第${sesNum}回 復習`;
         } else if (mode === 'category') {
           const catObj = CATEGORIES.find(c => c.id === filterValue);
+          cursorKey = `cat_${filterValue}`;
           targetQuestions = allQ.filter(q => q.category === filterValue);
           title = `${catObj ? catObj.name : ''} 全14回横断ループ (${targetQuestions.length}問)`;
           sessionLabel = catObj ? catObj.shortName : '科目別';
+          if (startOption === 'from_start') {
+            state.lastCursors[cursorKey] = 0;
+            savePersonalData();
+            initialIndex = 0;
+          } else {
+            const resumeInfo = getResumeInfoForSet(cursorKey, targetQuestions);
+            if (resumeInfo.hasResume) {
+              initialIndex = resumeInfo.resumeIndex;
+            }
+          }
         } else if (mode === 'category_wrong') {
           const catObj = CATEGORIES.find(c => c.id === filterValue);
           targetQuestions = allQ.filter(q => {
@@ -2165,14 +2636,22 @@
           title,
           sessionLabel,
           mode,
+          filterValue,
+          cursorKey,
           loopCountInSession: 1,
           questions: targetQuestions,
-          currentIndex: 0,
+          currentIndex: initialIndex,
           answers: {}, // { [qId]: { selectedIdx, isCorrect } }
+          sessionStreak: 0,
+          lastPraise: null,
           peekExplanation: false,
           isFinished: false
         };
         state.showJumpGrid = false;
+        if (initialIndex > 0) {
+          const resumeQ = targetQuestions[initialIndex];
+          showToast(`前回の続き（${initialIndex + 1}問目：第${resumeQ.session}回 問${resumeQ.questionNumber}）から開始しました！`);
+        }
         window.scrollTo({ top: 0, behavior: 'smooth' });
         render();
       },
@@ -2189,6 +2668,7 @@
 
         qs.answers[currentQ.id] = { selectedIdx, isCorrect };
         qs.peekExplanation = false;
+        qs.sessionStreak = isCorrect ? ((qs.sessionStreak || 0) + 1) : 0;
 
         const prev = state.studentProgress[currentQ.id] || { status: 'unattempted', attempts: 0, correctCount: 0, wrongCount: 0, streak: 0 };
         const prevWrong = prev.wrongCount !== undefined ? prev.wrongCount : Math.max(0, (prev.attempts || 0) - (prev.correctCount || 0));
@@ -2207,6 +2687,25 @@
           lastAnsweredAt: Date.now()
         };
 
+        // 5科目別ループ・過去問14回分ループの「前回の続き」位置を次の問題へ更新
+        if (qs.cursorKey) {
+          const nextIdx = (qs.currentIndex + 1) < qs.questions.length ? (qs.currentIndex + 1) : 0;
+          state.lastCursors[qs.cursorKey] = nextIdx;
+        }
+
+        // 「今日の15問」に含まれる問題を解いた場合、完了リストに記録
+        if (state.dailyMission && Array.isArray(state.dailyMission.questionIds) && state.dailyMission.questionIds.includes(currentQ.id)) {
+          if (!Array.isArray(state.dailyMission.completedIds)) state.dailyMission.completedIds = [];
+          if (!state.dailyMission.completedIds.includes(currentQ.id)) {
+            state.dailyMission.completedIds.push(currentQ.id);
+          }
+        }
+
+        // キリのいい問題数・連続正解・累計55問突破などの褒め言葉判定
+        const allQ = buildAllQuestions();
+        const latestStats = computeStudentStats(allQ);
+        qs.lastPraise = evaluateQuizPraiseMilestone(qs, isCorrect, latestStats);
+
         savePersonalData();
         render();
       },
@@ -2222,11 +2721,20 @@
         const qs = state.quizSession;
         if (!qs) return;
         qs.peekExplanation = false;
+        qs.lastPraise = null;
         if (qs.currentIndex < qs.questions.length - 1) {
           qs.currentIndex++;
+          if (qs.cursorKey) {
+            state.lastCursors[qs.cursorKey] = qs.currentIndex;
+            savePersonalData();
+          }
           window.scrollTo({ top: 0, behavior: 'smooth' });
           render();
         } else {
+          if (qs.cursorKey) {
+            state.lastCursors[qs.cursorKey] = 0;
+            savePersonalData();
+          }
           this.finishQuizSession();
         }
       },
@@ -2235,7 +2743,12 @@
         const qs = state.quizSession;
         if (!qs || qs.currentIndex <= 0) return;
         qs.peekExplanation = false;
+        qs.lastPraise = null;
         qs.currentIndex--;
+        if (qs.cursorKey) {
+          state.lastCursors[qs.cursorKey] = qs.currentIndex;
+          savePersonalData();
+        }
         window.scrollTo({ top: 0, behavior: 'smooth' });
         render();
       },
@@ -2244,7 +2757,12 @@
         const qs = state.quizSession;
         if (!qs || idx < 0 || idx >= qs.questions.length) return;
         qs.peekExplanation = false;
+        qs.lastPraise = null;
         qs.currentIndex = idx;
+        if (qs.cursorKey) {
+          state.lastCursors[qs.cursorKey] = qs.currentIndex;
+          savePersonalData();
+        }
         state.showJumpGrid = false;
         window.scrollTo({ top: 0, behavior: 'smooth' });
         render();
@@ -2298,10 +2816,13 @@
           title: `${qs.sessionLabel} 間違い直しループ ${nextLoop}周目 (${wrongQs.length}問)`,
           sessionLabel: qs.sessionLabel,
           mode: 'retry_wrong',
+          cursorKey: null,
           loopCountInSession: nextLoop,
           questions: wrongQs,
           currentIndex: 0,
           answers: {},
+          sessionStreak: 0,
+          lastPraise: null,
           peekExplanation: false,
           isFinished: false
         };
@@ -2314,14 +2835,21 @@
         const qs = state.quizSession;
         if (!qs) return;
         const nextLoop = (qs.loopCountInSession || 1) + 1;
+        if (qs.cursorKey) {
+          state.lastCursors[qs.cursorKey] = 0;
+          savePersonalData();
+        }
         state.quizSession = {
           title: `${qs.sessionLabel} 反復ループ ${nextLoop}周目 (${qs.questions.length}問)`,
           sessionLabel: qs.sessionLabel,
           mode: qs.mode,
+          cursorKey: qs.cursorKey || null,
           loopCountInSession: nextLoop,
           questions: [...qs.questions],
           currentIndex: 0,
           answers: {},
+          sessionStreak: 0,
+          lastPraise: null,
           peekExplanation: false,
           isFinished: false
         };
@@ -2390,7 +2918,7 @@
         } else if (type === 'reset_all') {
           state.confirmModal = {
             title: '学習履歴のリセット確認',
-            message: 'このブラウザに保存されている解答履歴・演習ログを初期状態にリセットしますか？（※貼った付箋メモはそのまま残ります）',
+            message: 'このブラウザに保存されている解答履歴・演習ログ・続き位置を初期状態にリセットしますか？（※貼った付箋メモはそのまま残ります）',
             confirmLabel: '履歴をリセットする',
             actionType: 'reset_all'
           };
@@ -2421,6 +2949,8 @@
           state.studentProgress = {};
           state.examLogs = [];
           state.completedReviewLoops = 0;
+          state.lastCursors = {};
+          state.dailyMission = null;
           savePersonalData();
           showToast('学習履歴をリセットしました（新しい1周目を開始できます）');
         }
@@ -2457,6 +2987,10 @@
 
     // A. ヘッダー & ボトムナビゲーション (上下セーフエリア対応・スマホの時刻表示やホームバーと被らない設計)
     function renderStudentHeader(stats) {
+      const passSummaryHtml = stats.isPassJudged
+        ? `<span class="font-bold text-slate-700">${stats.passGrade}</span> (合格可能性 <strong class="text-rose-600">${stats.passProbability}%</strong>)`
+        : `<span class="font-bold text-amber-700">合格判定：まだ問題数が少ないです</span> (あと<strong class="text-rose-600">${stats.remainingForJudgment}問</strong>で判定 / 現在${stats.attemptedQuestions}/55問)`;
+
       return `
         <header class="sticky top-0 z-30 bg-white/95 backdrop-blur border-b border-slate-200 px-4 pt-safe-top pb-2.5">
           <div class="max-w-4xl mx-auto flex items-center justify-between gap-2">
@@ -2470,7 +3004,7 @@
                   </span>
                 </div>
                 <p class="text-[11px] text-slate-500 truncate">
-                  ブラウザ自動保存 ｜ <span class="font-bold text-slate-700">${stats.passGrade}</span> (合格可能性 <strong class="text-rose-600">${stats.passProbability}%</strong>)
+                  ${passSummaryHtml}
                 </p>
               </div>
             </div>
@@ -2486,11 +3020,12 @@
     }
 
     function renderStudentBottomNav(stats) {
+      const analyticsBadge = stats.isPassJudged ? `${stats.passProbability}%` : `${stats.attemptedQuestions}/55`;
       const tabs = [
         { id: 'dashboard', label: 'ホーム', icon: 'home', badge: null },
         { id: 'exam', label: '過去問14回', icon: 'book-open', badge: `${stats.totalQuestions}` },
         { id: 'stickies', label: '復習・付箋', icon: 'repeat', badge: stats.review > 0 ? `${stats.review}` : (stats.everWrong > 0 ? `${stats.everWrong}` : null) },
-        { id: 'analytics', label: '成績カルテ', icon: 'award', badge: `${stats.passProbability}%` },
+        { id: 'analytics', label: '成績カルテ', icon: 'award', badge: analyticsBadge },
         { id: 'pdfs', label: '公式PDF', icon: 'file-text', badge: '14回' }
       ];
 
@@ -2513,11 +3048,14 @@
       `;
     }
 
-    // B. ホーム（DORILOOP式 弱点反復ダッシュボード）
+    // B. ホーム（今日の15問 ＆ 褒め言葉バナー ＆ 続きから再開 ＆ 過去問14回分棒グラフ）
     function renderDashboardTab(allQuestions, stats) {
+      const todays15 = getTodays15Summary(allQuestions);
+      const praiseCard = getDashboardPraiseMessage(stats, todays15);
+
       return `
         <div class="space-y-5 animate-fadeIn">
-          <!-- 個人合格可能性＆学習進捗サマリーバナー -->
+          <!-- 個人合格可能性＆学習進捗サマリーバナー（55問未満は判定保留表示） -->
           <div class="bg-gradient-to-br from-slate-900 via-slate-800 to-rose-950 text-white rounded-3xl p-5 shadow-lg">
             <div class="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/10">
               <div class="flex items-center gap-2">
@@ -2535,8 +3073,16 @@
             <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-4">
               <div class="bg-white/10 rounded-2xl p-3">
                 <div class="text-[11px] text-slate-300">現在の合格判定</div>
-                <div class="text-base font-black mt-0.5 text-emerald-300 truncate">${stats.passGrade}</div>
-                <div class="text-[10px] text-slate-300 mt-0.5">合格可能性 <strong class="text-white">${stats.passProbability}%</strong></div>
+                ${stats.isPassJudged ? `
+                  <div class="text-base font-black mt-0.5 text-emerald-300 truncate">${stats.passGrade}</div>
+                  <div class="text-[10px] text-slate-300 mt-0.5">合格可能性 <strong class="text-white">${stats.passProbability}%</strong></div>
+                ` : `
+                  <div class="text-sm font-black mt-0.5 text-amber-300">まだ問題数が少ないです</div>
+                  <div class="text-[10px] text-slate-200 mt-0.5">あと<strong class="text-white">${stats.remainingForJudgment}問</strong>で判定解放 (${stats.attemptedQuestions}/55問)</div>
+                  <div class="w-full h-1.5 bg-white/20 rounded-full overflow-hidden mt-1.5">
+                    <div class="h-full bg-amber-400" style="width: ${stats.judgmentProgressPct}%"></div>
+                  </div>
+                `}
               </div>
               <div class="bg-white/10 rounded-2xl p-3">
                 <div class="text-[11px] text-slate-300">累計正答率（合格基準60%）</div>
@@ -2544,15 +3090,93 @@
                 <div class="text-[10px] text-slate-300 mt-0.5">累計 ${stats.totalCorrect}/${stats.totalAttempts}回正解</div>
               </div>
               <div class="bg-white/10 rounded-2xl p-3">
-                <div class="text-[11px] text-slate-300">完全定着済 (Mastered)</div>
-                <div class="text-xl font-black mt-0.5 text-sky-300">${stats.mastered}<span class="text-xs font-normal text-slate-300"> / ${stats.totalQuestions}問</span></div>
-                <div class="text-[10px] text-slate-300 mt-0.5">全体定着率 ${stats.masteryRate}%</div>
+                <div class="text-[11px] text-slate-300">解答済 / 完全定着済</div>
+                <div class="text-xl font-black mt-0.5 text-sky-300">${stats.attemptedQuestions}<span class="text-xs font-normal text-slate-300"> / ${stats.totalQuestions}問</span></div>
+                <div class="text-[10px] text-slate-300 mt-0.5">定着済 ${stats.mastered}問 (${stats.masteryRate}%)</div>
               </div>
               <div class="bg-white/10 rounded-2xl p-3">
                 <div class="text-[11px] text-slate-300">要復習 / 過去ミス履歴</div>
                 <div class="text-xl font-black mt-0.5 text-rose-300">${stats.review}問 <span class="text-xs font-normal text-slate-300">/ 履歴${stats.everWrong}問</span></div>
                 <div class="text-[10px] text-slate-300 mt-0.5">復習ループ完走 ${state.completedReviewLoops}周</div>
               </div>
+            </div>
+          </div>
+
+          <!-- キリのいいところでの褒め言葉＆応援メッセージカード -->
+          <div class="bg-gradient-to-r ${praiseCard.theme} rounded-3xl p-4 sm:p-5 shadow-md flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div class="space-y-1">
+              <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-black bg-white/20 backdrop-blur-xs">
+                ${praiseCard.badge}
+              </span>
+              <h2 class="text-sm sm:text-base font-black leading-snug">${praiseCard.title}</h2>
+              <p class="text-xs opacity-90 leading-relaxed">${praiseCard.body}</p>
+            </div>
+          </div>
+
+          <!-- 🌟 ホーム最優先配置：「今日の15問（今日解くべき問題）」スマートメニュー -->
+          <div class="bg-white rounded-3xl p-5 shadow-md border-2 border-rose-200 relative overflow-hidden">
+            <div class="flex flex-wrap items-start justify-between gap-3">
+              <div class="space-y-1">
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-rose-600 text-white flex items-center gap-1">
+                    <i data-lucide="flame" class="w-3.5 h-3.5"></i> 今日の15問（${todays15.dateLabel}の目標）
+                  </span>
+                  ${todays15.setNumber > 1 ? `
+                    <span class="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">本日 ${todays15.setNumber}セット目</span>
+                  ` : ''}
+                  <span class="text-xs font-bold text-slate-500">何から解くか迷ったらコレ！</span>
+                </div>
+                <h2 class="text-base sm:text-lg font-black text-slate-900">
+                  今日解くべきおすすめ15問（弱点復習＋5科目バランス配分）
+                </h2>
+                <p class="text-xs text-slate-600">
+                  あなたの学習状況に合わせて、<strong>要復習 ${todays15.reviewCount}問</strong>・<strong>過去ミス/付箋 ${todays15.stickyOrPastWrongCount}問</strong>・<strong>未着手5科目バランス ${todays15.freshCount}問</strong>を自動セレクトしました！
+                </p>
+              </div>
+              <div class="text-right shrink-0">
+                <div class="text-xs font-bold text-slate-500">今日の達成度</div>
+                <div class="text-2xl font-black ${todays15.isAllDone ? 'text-emerald-600' : 'text-rose-600'}">
+                  ${todays15.doneCount} <span class="text-xs font-bold text-slate-500">/ ${todays15.totalCount}問 (${todays15.progressPct}%)</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 今日の15問 達成度棒グラフ -->
+            <div class="mt-3">
+              <div class="w-full h-3 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+                <div class="h-full ${todays15.isAllDone ? 'bg-gradient-to-r from-emerald-500 to-teal-500' : 'bg-gradient-to-r from-rose-500 to-amber-500'} transition-all duration-300" style="width: ${todays15.progressPct}%"></div>
+              </div>
+            </div>
+
+            <div class="mt-4 flex flex-wrap items-center gap-2.5">
+              ${todays15.isAllDone ? `
+                <button type="button" onclick="window.appActions.refreshTodays15()"
+                  class="flex-1 min-w-[200px] py-3 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs sm:text-sm shadow-sm transition flex items-center justify-center gap-2">
+                  <i data-lucide="sparkles" class="w-4 h-4"></i> 今日の15問クリア！おかわり15問を作る
+                </button>
+                <button type="button" onclick="window.appActions.startQuiz('todays_15', null, 'from_start')"
+                  class="py-3 px-4 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition flex items-center justify-center gap-1.5">
+                  <i data-lucide="repeat" class="w-4 h-4"></i> 今日の15問をもう1周復習する
+                </button>
+              ` : todays15.doneCount > 0 ? `
+                <button type="button" onclick="window.appActions.startQuiz('todays_15', null, 'resume')"
+                  class="flex-1 min-w-[200px] py-3 px-4 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white font-black text-xs sm:text-sm shadow-sm transition flex items-center justify-center gap-2">
+                  <i data-lucide="play" class="w-4 h-4"></i> 今日の15問を続きから再開（${todays15.resumeIdx + 1}問目〜 / 残り${todays15.totalCount - todays15.doneCount}問）
+                </button>
+                <button type="button" onclick="window.appActions.startQuiz('todays_15', null, 'from_start')"
+                  class="py-3 px-3.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold text-xs transition">
+                  1問目から
+                </button>
+              ` : `
+                <button type="button" onclick="window.appActions.startQuiz('todays_15', null, 'resume')"
+                  class="flex-1 min-w-[200px] py-3 px-4 rounded-2xl bg-gradient-to-r from-rose-600 to-pink-600 hover:from-rose-700 hover:to-pink-700 text-white font-black text-xs sm:text-sm shadow-md transition flex items-center justify-center gap-2">
+                  <i data-lucide="play-circle" class="w-4 h-4"></i> 今日の15問をスタート（まずここをタップ！）
+                </button>
+                <button type="button" onclick="window.appActions.refreshTodays15()"
+                  class="py-3 px-3.5 rounded-2xl bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold text-xs transition">
+                  問題をシャッフル
+                </button>
+              `}
             </div>
           </div>
 
@@ -2624,39 +3248,58 @@
             </div>
           </div>
 
-          <!-- 5科目別 集中ループ演習カード -->
+          <!-- 5科目別 集中ループ演習カード（前回の続きから再開対応＆棒グラフ表示） -->
           <div class="bg-white rounded-3xl p-5 shadow-sm border border-slate-200">
-            <h2 class="text-base font-black text-slate-900 mb-3 flex items-center gap-2">
-              <i data-lucide="layers" class="w-5 h-5 text-indigo-600"></i> 5科目別 集中ループ演習（全14回・770問横断）
-            </h2>
+            <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <div>
+                <h2 class="text-base font-black text-slate-900 flex items-center gap-2">
+                  <i data-lucide="layers" class="w-5 h-5 text-indigo-600"></i> 5科目別 集中ループ演習（前回の続きから再開対応）
+                </h2>
+                <p class="text-xs text-slate-500">途中で終了しても、次回は「前回の続きの問題」からすぐに再開できます</p>
+              </div>
+            </div>
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               ${CATEGORIES.map(c => {
                 const cs = stats.categoryStats[c.id];
-                const rate = cs.total > 0 ? Math.round((cs.mastered / cs.total) * 100) : 0;
                 const wrongInCat = cs.everWrong || cs.review || 0;
+                const catQuestions = allQuestions.filter(q => q.category === c.id);
+                const resumeInfo = getResumeInfoForSet(`cat_${c.id}`, catQuestions);
+                const resumeQ = resumeInfo.resumeQuestion;
                 return `
                   <div class="p-3.5 rounded-2xl border ${c.border} ${c.lightBg} flex flex-col justify-between">
                     <div>
                       <div class="flex items-center justify-between gap-2">
                         <span class="text-xs font-black ${c.text}">${c.name}</span>
-                        <span class="text-[11px] font-bold text-slate-600">${c.range}</span>
+                        <span class="text-[11px] font-bold text-slate-600">${c.range}（全${cs.total}問）</span>
                       </div>
                       <div class="flex items-center justify-between text-xs mt-2 text-slate-700">
-                        <span>定着: <strong>${cs.mastered}</strong>/${cs.total}問 (${rate}%)</span>
+                        <span>解答済: <strong>${cs.attempted}</strong>/${cs.total}問 (${cs.attemptedPct}%) ｜ 定着: <strong>${cs.mastered}</strong>問</span>
                         <span>正答率: <strong class="${cs.accuracy >= 60 ? 'text-emerald-700' : 'text-rose-600'}">${cs.accuracy}%</strong></span>
                       </div>
-                      <div class="w-full h-2 bg-white rounded-full overflow-hidden mt-1.5 border border-slate-200/60">
-                        <div class="h-full ${c.color}" style="width: ${rate}%"></div>
+                      <!-- 棒グラフ（解答済達成度＋定着度） -->
+                      <div class="w-full h-2.5 bg-white rounded-full overflow-hidden mt-1.5 border border-slate-200/70 relative">
+                        <div class="h-full ${c.color} transition-all duration-300" style="width: ${cs.attemptedPct}%"></div>
                       </div>
                     </div>
-                    <div class="mt-3 grid grid-cols-2 gap-2">
-                      <button type="button" onclick="window.appActions.startQuiz('category', '${c.id}')"
-                        class="py-2 px-2 rounded-xl bg-white hover:bg-slate-50 ${c.text} font-bold text-xs border ${c.border} shadow-sm transition flex items-center justify-center gap-1">
-                        <i data-lucide="play-circle" class="w-3.5 h-3.5"></i> 全${cs.total}問を演習
-                      </button>
+                    <div class="mt-3 flex flex-wrap items-center gap-1.5">
+                      ${resumeInfo.hasResume && resumeQ ? `
+                        <button type="button" onclick="window.appActions.startQuiz('category', '${c.id}', 'resume')"
+                          class="flex-1 py-2 px-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs shadow-sm transition flex items-center justify-center gap-1">
+                          <i data-lucide="play" class="w-3.5 h-3.5"></i> 続きから (${resumeInfo.resumeIndex + 1}問目:第${resumeQ.session}回問${resumeQ.questionNumber}〜)
+                        </button>
+                        <button type="button" onclick="window.appActions.startQuiz('category', '${c.id}', 'from_start')"
+                          class="py-2 px-2.5 rounded-xl bg-white hover:bg-slate-50 ${c.text} font-bold text-[11px] border ${c.border} transition">
+                          最初から
+                        </button>
+                      ` : `
+                        <button type="button" onclick="window.appActions.startQuiz('category', '${c.id}', 'from_start')"
+                          class="flex-1 py-2 px-2.5 rounded-xl bg-white hover:bg-slate-50 ${c.text} font-bold text-xs border ${c.border} shadow-sm transition flex items-center justify-center gap-1">
+                          <i data-lucide="play-circle" class="w-3.5 h-3.5"></i> 全${cs.total}問を演習
+                        </button>
+                      `}
                       <button type="button" onclick="window.appActions.startQuiz('category_wrong', '${c.id}')"
-                        class="py-2 px-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-sm transition flex items-center justify-center gap-1">
-                        <i data-lucide="repeat" class="w-3.5 h-3.5"></i> 間違い復習(${wrongInCat})
+                        class="py-2 px-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-sm transition flex items-center justify-center gap-1">
+                        <i data-lucide="repeat" class="w-3.5 h-3.5"></i> ミス(${wrongInCat})
                       </button>
                     </div>
                   </div>
@@ -2665,41 +3308,68 @@
             </div>
           </div>
 
-          <!-- 過去問14回分（第54回〜第41回）模擬試験スタート -->
+          <!-- 過去問14回分（第54回〜第41回）回数別55問ループ（達成度棒グラフ＆前回の続きから再開対応） -->
           <div class="bg-white rounded-3xl p-5 shadow-sm border border-slate-200">
             <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
               <div>
                 <h2 class="text-base font-black text-slate-900 flex items-center gap-2">
-                  <i data-lucide="calendar" class="w-5 h-5 text-rose-600"></i> 過去問14回分（第54回〜第41回）回数別55問演習＆間違い復習
+                  <i data-lucide="calendar" class="w-5 h-5 text-rose-600"></i> 過去問14回分（第54回〜第41回）達成度棒グラフ＆回数別演習
                 </h2>
-                <p class="text-xs text-slate-500">新しく追加した第44回〜第41回を含む全14回・770問すべてに詳しい解説が付いています</p>
+                <p class="text-xs text-slate-500">各回55問のうち何問解けたかが棒グラフでひと目でわかります！前回の続きの問題からもすぐ再開できます</p>
               </div>
             </div>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               ${EXAM_PDF_LIST.map(ex => {
-                const ss = stats.sessionStats[ex.session] || { total: 55, mastered: 0, review: 0, accuracy: 0, attempts: 0 };
-                const pct = ss.total > 0 ? Math.round((ss.mastered / ss.total) * 100) : 0;
+                const ss = stats.sessionStats[ex.session] || { total: 55, mastered: 0, review: 0, attempted: 0, attemptedPct: 0, masteredPct: 0, everWrong: 0, accuracy: 0, attempts: 0 };
+                const sesQuestions = allQuestions.filter(q => q.session === ex.session).sort((a, b) => a.questionNumber - b.questionNumber);
+                const resumeInfo = getResumeInfoForSet(`ses_${ex.session}`, sesQuestions);
+                const resumeQ = resumeInfo.resumeQuestion;
+                const isComplete = ss.attempted >= ss.total;
+                const barColor = isComplete ? 'bg-emerald-500' : (ss.attempted > 0 ? 'bg-rose-500' : 'bg-slate-300');
+
                 return `
-                  <div class="p-3.5 rounded-2xl border border-slate-200 hover:border-rose-300 bg-slate-50/70 flex flex-col justify-between gap-2.5 transition">
-                    <div class="flex items-center justify-between gap-2">
-                      <div>
+                  <div class="p-3.5 rounded-2xl border ${isComplete ? 'border-emerald-300 bg-emerald-50/40' : 'border-slate-200 bg-slate-50/70'} hover:border-rose-300 flex flex-col justify-between gap-2.5 transition">
+                    <div>
+                      <div class="flex items-center justify-between gap-2">
                         <div class="flex items-center gap-1.5">
                           <span class="text-xs font-black text-slate-900">${ex.year}</span>
                           ${ex.session <= 44 ? `<span class="px-1.5 py-0.2 rounded bg-rose-100 text-rose-700 text-[10px] font-bold">新規追加</span>` : ''}
                         </div>
-                        <div class="text-[11px] text-slate-500 mt-0.5">
-                          定着 <strong>${ss.mastered}</strong>/${ss.total}問 (${pct}%) ・ 要復習 <strong class="text-rose-600">${ss.review}問</strong> ${ss.attempts > 0 ? `・ 正答率 ${ss.accuracy}%` : ''}
-                        </div>
+                        <span class="px-2 py-0.5 rounded-full text-[10px] font-black ${isComplete ? 'bg-emerald-600 text-white' : ss.attempted > 0 ? 'bg-rose-100 text-rose-700' : 'bg-slate-200 text-slate-600'}">
+                          ${isComplete ? '🎉 55問完走！' : `達成度 ${ss.attemptedPct}% (${ss.attempted}/${ss.total}問)`}
+                        </span>
+                      </div>
+
+                      <div class="flex items-center justify-between text-xs mt-2 text-slate-700">
+                        <span>解答済: <strong>${ss.attempted}</strong>/${ss.total}問 ｜ 定着: <strong class="text-emerald-700">${ss.mastered}</strong>問</span>
+                        <span>正答率: <strong class="${ss.accuracy >= 60 ? 'text-emerald-700' : 'text-rose-600'}">${ss.accuracy}%</strong></span>
+                      </div>
+
+                      <!-- 5科目集中ループと同じスタイルの達成度棒グラフ -->
+                      <div class="w-full h-2.5 bg-white rounded-full overflow-hidden mt-1.5 border border-slate-200/80">
+                        <div class="h-full ${barColor} transition-all duration-300" style="width: ${ss.attemptedPct}%"></div>
                       </div>
                     </div>
-                    <div class="flex items-center gap-2">
-                      <button type="button" onclick="window.appActions.startQuiz('session_all', ${ex.session})"
-                        class="flex-1 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-sm transition">
-                        全${ss.total}問を解く
-                      </button>
+
+                    <div class="flex flex-wrap items-center gap-1.5 pt-1">
+                      ${resumeInfo.hasResume && resumeQ ? `
+                        <button type="button" onclick="window.appActions.startQuiz('session_all', ${ex.session}, 'resume')"
+                          class="flex-1 py-2 px-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-sm transition flex items-center justify-center gap-1">
+                          <i data-lucide="play" class="w-3.5 h-3.5"></i> 続きから (問${resumeQ.questionNumber}〜)
+                        </button>
+                        <button type="button" onclick="window.appActions.startQuiz('session_all', ${ex.session}, 'from_start')"
+                          class="py-2 px-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 font-bold text-[11px] border border-slate-200 transition">
+                          問1から
+                        </button>
+                      ` : `
+                        <button type="button" onclick="window.appActions.startQuiz('session_all', ${ex.session}, 'from_start')"
+                          class="flex-1 py-2 px-2.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs shadow-sm transition flex items-center justify-center gap-1">
+                          <i data-lucide="play-circle" class="w-3.5 h-3.5"></i> 全${ss.total}問を解く
+                        </button>
+                      `}
                       <button type="button" onclick="window.appActions.startQuiz('session_wrong', ${ex.session})"
-                        class="px-3 py-2 rounded-xl bg-white hover:bg-rose-50 text-rose-700 font-bold text-xs border border-rose-200 transition">
-                        ミス復習
+                        class="px-2.5 py-2 rounded-xl bg-white hover:bg-rose-50 text-rose-700 font-bold text-xs border border-rose-200 transition">
+                        ミス復習(${ss.everWrong || ss.review || 0})
                       </button>
                     </div>
                   </div>
@@ -3058,7 +3728,7 @@
       `;
     }
 
-    // E. 学生自身の成績カルテ（合格可能性・5科目診断・回数別定着度・演習履歴）
+    // E. 学生自身の成績カルテ（合格可能性55問以上判定・5科目診断・回数別達成度棒グラフ・演習履歴）
     function renderAnalyticsTab(allQuestions, stats) {
       return `
         <div class="space-y-5 animate-fadeIn">
@@ -3073,7 +3743,7 @@
               </div>
               <div class="flex items-center gap-2">
                 <span class="px-3.5 py-1.5 rounded-2xl text-xs font-black text-white ${stats.passBadgeColor}">
-                  ${stats.passGrade}（合格可能性 ${stats.passProbability}%）
+                  ${stats.isPassJudged ? `${stats.passGrade}（合格可能性 ${stats.passProbability}%）` : `${stats.passGrade}（あと${stats.remainingForJudgment}問で判定）`}
                 </span>
               </div>
             </div>
@@ -3081,26 +3751,51 @@
             <!-- 合格可能性ゲージ＆進捗分析 -->
             <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
               <div class="p-4 rounded-2xl bg-slate-900 text-white flex flex-col justify-between">
-                <div>
-                  <div class="flex items-center justify-between text-xs text-slate-300">
-                    <span>現在の合格可能性</span>
-                    <span class="text-emerald-400 font-bold">${stats.passGrade}</span>
+                ${stats.isPassJudged ? `
+                  <div>
+                    <div class="flex items-center justify-between text-xs text-slate-300">
+                      <span>現在の合格可能性</span>
+                      <span class="text-emerald-400 font-bold">${stats.passGrade}</span>
+                    </div>
+                    <div class="text-4xl font-black text-amber-300 mt-1">
+                      ${stats.passProbability}<span class="text-lg font-bold text-slate-200">%</span>
+                    </div>
+                    <div class="mt-2 text-xs text-slate-300">
+                      国家試験合格ライン：総得点60%以上 ＆ 無得点科目なし
+                    </div>
                   </div>
-                  <div class="text-4xl font-black text-amber-300 mt-1">
-                    ${stats.passProbability}<span class="text-lg font-bold text-slate-200">%</span>
+                  <div class="w-full h-2.5 bg-slate-700 rounded-full overflow-hidden mt-3">
+                    <div class="h-full bg-gradient-to-r from-amber-400 to-emerald-400" style="width: ${stats.passProbability}%"></div>
                   </div>
-                  <div class="mt-2 text-xs text-slate-300">
-                    国家試験合格ライン：総得点60%以上 ＆ 無得点科目なし
+                ` : `
+                  <div>
+                    <div class="flex items-center justify-between text-xs text-slate-300">
+                      <span>現在の合格可能性</span>
+                      <span class="text-amber-300 font-bold">55問以上で判定解放</span>
+                    </div>
+                    <div class="text-xl font-black text-amber-300 mt-2">
+                      まだ問題数が少ないです
+                    </div>
+                    <div class="mt-1.5 text-xs text-slate-300 leading-relaxed">
+                      正確な合格判定には<strong>少なくとも55問</strong>の解答が必要です。<br/>
+                      現在 <strong>${stats.attemptedQuestions} / 55問</strong>（あと <strong class="text-rose-300">${stats.remainingForJudgment}問</strong>）
+                    </div>
                   </div>
-                </div>
-                <div class="w-full h-2.5 bg-slate-700 rounded-full overflow-hidden mt-3">
-                  <div class="h-full bg-gradient-to-r from-amber-400 to-emerald-400" style="width: ${stats.passProbability}%"></div>
-                </div>
+                  <div class="mt-3">
+                    <div class="flex items-center justify-between text-[11px] text-slate-300 mb-1">
+                      <span>判定解放までの進捗</span>
+                      <span>${stats.judgmentProgressPct}%</span>
+                    </div>
+                    <div class="w-full h-2.5 bg-slate-700 rounded-full overflow-hidden">
+                      <div class="h-full bg-gradient-to-r from-rose-400 to-amber-400" style="width: ${stats.judgmentProgressPct}%"></div>
+                    </div>
+                  </div>
+                `}
               </div>
 
               <div class="p-4 rounded-2xl bg-slate-50 border border-slate-200 flex flex-col justify-between">
                 <div>
-                  <div class="text-xs font-bold text-slate-500">累計正答率 ＆ 全770問の定着度</div>
+                  <div class="text-xs font-bold text-slate-500">累計正答率 ＆ 全770問の達成度</div>
                   <div class="flex items-baseline gap-2 mt-1">
                     <span class="text-3xl font-black ${stats.overallAccuracy >= 60 ? 'text-emerald-600' : 'text-rose-600'}">${stats.overallAccuracy}%</span>
                     <span class="text-xs font-bold text-slate-600">
@@ -3110,11 +3805,11 @@
                 </div>
                 <div class="mt-3 space-y-1.5 text-xs">
                   <div class="flex items-center justify-between">
-                    <span class="text-slate-600">完全定着済（○）</span>
-                    <span class="font-bold text-emerald-700">${stats.mastered} / ${stats.totalQuestions}問 (${stats.masteryRate}%)</span>
+                    <span class="text-slate-600">解答済: <strong>${stats.attemptedQuestions}</strong>/770問 (${stats.attemptedRate}%)</span>
+                    <span class="font-bold text-emerald-700">定着: ${stats.mastered}問 (${stats.masteryRate}%)</span>
                   </div>
                   <div class="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
-                    <div class="h-full bg-emerald-500" style="width: ${stats.masteryRate}%"></div>
+                    <div class="h-full bg-emerald-500" style="width: ${stats.attemptedRate}%"></div>
                   </div>
                   <div class="flex items-center justify-between pt-1 text-[11px] text-slate-500">
                     <span>要復習: <strong class="text-rose-600">${stats.review}問</strong></span>
@@ -3141,13 +3836,12 @@
 
           <!-- 5科目別 合格基準達成度カルテ -->
           <div class="bg-white rounded-3xl p-5 shadow-sm border border-slate-200">
-            <h3 class="text-base font-black text-slate-900 mb-1">5科目別 正答率＆定着カルテ（合格基準：総得点60%以上・無得点科目なし）</h3>
-            <p class="text-xs text-slate-500 mb-4">各科目の正答率が60%を超えているか、苦手科目がないかチェックしましょう</p>
+            <h3 class="text-base font-black text-slate-900 mb-1">5科目別 正答率＆達成度カルテ（合格基準：総得点60%以上・無得点科目なし）</h3>
+            <p class="text-xs text-slate-500 mb-4">各科目の達成度棒グラフと正答率が60%を超えているかチェックしましょう</p>
             <div class="space-y-3">
               ${CATEGORIES.map(c => {
                 const cs = stats.categoryStats[c.id];
                 const passLineMet = cs.accuracy >= 60;
-                const masteryPct = cs.total > 0 ? Math.round((cs.mastered / cs.total) * 100) : 0;
                 return `
                   <div class="p-3.5 rounded-2xl border border-slate-200 bg-slate-50/50">
                     <div class="flex flex-wrap items-center justify-between gap-2">
@@ -3156,15 +3850,15 @@
                         <span class="text-xs text-slate-500">${c.range}</span>
                       </div>
                       <div class="flex flex-wrap items-center gap-3 text-xs">
-                        <span>定着 <strong>${cs.mastered}</strong>/${cs.total}問 (${masteryPct}%)</span>
-                        <span>要復習 <strong class="text-rose-600">${cs.review}</strong>問</span>
+                        <span>解答済 <strong>${cs.attempted}</strong>/${cs.total}問 (${cs.attemptedPct}%)</span>
+                        <span>定着 <strong class="text-emerald-700">${cs.mastered}</strong>問</span>
                         <span class="font-black ${cs.attempts === 0 ? 'text-slate-500' : passLineMet ? 'text-emerald-600' : 'text-rose-600'}">
                           正答率 ${cs.accuracy}% ${cs.attempts > 0 ? (passLineMet ? '（合格圏）' : '（要強化）') : '（未解答）'}
                         </span>
                       </div>
                     </div>
                     <div class="relative w-full h-2.5 bg-slate-200 rounded-full overflow-hidden mt-2">
-                      <div class="h-full ${c.color}" style="width: ${cs.accuracy}%"></div>
+                      <div class="h-full ${c.color}" style="width: ${cs.attemptedPct}%"></div>
                     </div>
                   </div>
                 `;
@@ -3172,24 +3866,50 @@
             </div>
           </div>
 
-          <!-- 過去14回（第54回〜第41回）回数別定着状況 -->
+          <!-- 過去14回（第54回〜第41回）回数別達成度棒グラフ・正答率 -->
           <div class="bg-white rounded-3xl p-5 shadow-sm border border-slate-200">
-            <h3 class="text-base font-black text-slate-900 mb-1">過去問14回分（第54回〜第41回）回数別の定着度・正答率</h3>
-            <p class="text-xs text-slate-500 mb-3">各回55問のうち何問定着したかを一覧で確認できます</p>
-            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <h3 class="text-base font-black text-slate-900 mb-1">過去問14回分（第54回〜第41回）回数別の達成度棒グラフ・正答率</h3>
+            <p class="text-xs text-slate-500 mb-3">各回55問のうち何問解けたかが棒グラフで表示されます。前回の続きからいつでも再開できます</p>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
               ${EXAM_PDF_LIST.map(ex => {
-                const ss = stats.sessionStats[ex.session] || { total: 55, mastered: 0, review: 0, accuracy: 0, attempts: 0 };
-                const pct = ss.total > 0 ? Math.round((ss.mastered / ss.total) * 100) : 0;
+                const ss = stats.sessionStats[ex.session] || { total: 55, mastered: 0, review: 0, attempted: 0, attemptedPct: 0, accuracy: 0, attempts: 0 };
+                const sesQuestions = allQuestions.filter(q => q.session === ex.session).sort((a, b) => a.questionNumber - b.questionNumber);
+                const resumeInfo = getResumeInfoForSet(`ses_${ex.session}`, sesQuestions);
+                const resumeQ = resumeInfo.resumeQuestion;
+                const isComplete = ss.attempted >= ss.total;
                 return `
-                  <div class="p-3 rounded-2xl border border-slate-200 bg-slate-50 flex items-center justify-between gap-2">
+                  <div class="p-3.5 rounded-2xl border border-slate-200 bg-slate-50 flex flex-col justify-between gap-2">
                     <div>
-                      <div class="text-xs font-black text-slate-800">${ex.year}</div>
-                      <div class="text-[11px] text-slate-500">定着 ${ss.mastered}/${ss.total}問 (${pct}%) ・ 正答率 ${ss.accuracy}%</div>
+                      <div class="flex items-center justify-between gap-2">
+                        <span class="text-xs font-black text-slate-800">${ex.year}</span>
+                        <span class="text-[11px] font-bold ${isComplete ? 'text-emerald-600' : 'text-rose-600'}">
+                          解答済 ${ss.attempted}/${ss.total}問 (${ss.attemptedPct}%)
+                        </span>
+                      </div>
+                      <div class="text-[11px] text-slate-500 mt-0.5">
+                        定着 ${ss.mastered}問 ・ 要復習 ${ss.review}問 ・ 正答率 ${ss.accuracy}%
+                      </div>
+                      <div class="w-full h-2.5 bg-white rounded-full overflow-hidden mt-1.5 border border-slate-200">
+                        <div class="h-full ${isComplete ? 'bg-emerald-500' : 'bg-rose-500'}" style="width: ${ss.attemptedPct}%"></div>
+                      </div>
                     </div>
-                    <button type="button" onclick="window.appActions.startQuiz('session_all', ${ex.session})"
-                      class="px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 text-rose-600 border border-rose-200 font-bold text-xs">
-                      演習
-                    </button>
+                    <div class="flex items-center justify-end gap-1.5 pt-1">
+                      ${resumeInfo.hasResume && resumeQ ? `
+                        <button type="button" onclick="window.appActions.startQuiz('session_all', ${ex.session}, 'resume')"
+                          class="px-3 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs">
+                          続きから(問${resumeQ.questionNumber}〜)
+                        </button>
+                        <button type="button" onclick="window.appActions.startQuiz('session_all', ${ex.session}, 'from_start')"
+                          class="px-2.5 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-600 border border-slate-200 font-bold text-[11px]">
+                          問1から
+                        </button>
+                      ` : `
+                        <button type="button" onclick="window.appActions.startQuiz('session_all', ${ex.session}, 'from_start')"
+                          class="px-3 py-1.5 rounded-xl bg-white hover:bg-rose-50 text-rose-600 border border-rose-200 font-bold text-xs">
+                          全55問を演習
+                        </button>
+                      `}
+                    </div>
                   </div>
                 `;
               }).join('')}
@@ -3256,9 +3976,9 @@
                     <p class="text-xs text-slate-500 mt-0.5">問1〜問55 完全収録（解答・詳細解説付き）</p>
                   </div>
                   <div class="flex items-center gap-2">
-                    <button type="button" onclick="window.appActions.startQuiz('session_all', ${ex.session})"
+                    <button type="button" onclick="window.appActions.startQuiz('session_all', ${ex.session}, 'resume')"
                       class="flex-1 py-2 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold text-xs text-center transition">
-                      アプリで全55問を解く
+                      アプリで55問を解く（続き対応）
                     </button>
                     <button type="button" onclick="window.appActions.setSessionFilter('${ex.session}'); window.appActions.setTab('exam');"
                       class="px-3 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 font-bold text-xs border border-slate-200 flex items-center gap-1">
@@ -3273,7 +3993,7 @@
       `;
     }
 
-    // G. クイズ演習実行画面（何周でもループ可能・全問詳細解説＆結果画面での全問解説振り返り付き）
+    // G. クイズ演習実行画面（キリのいいところでの褒め言葉バナー ＆ 前回の続き保存 ＆ 全問解説振り返り付き）
     function renderQuizRunner() {
       const qs = state.quizSession;
       if (!qs) return '';
@@ -3291,13 +4011,23 @@
             <div class="bg-white rounded-3xl p-6 shadow-md border border-slate-200 space-y-5">
               <div class="text-center space-y-2">
                 <span class="px-3 py-1 rounded-full text-xs font-black ${passed ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}">
-                  ${passed ? '合格基準(60%)クリア！素晴らしい！' : 'あと一歩！間違えた問題をループ復習しましょう'}
+                  ${passed ? '🎉 合格基準(60%)クリア！素晴らしい実力です！' : '👏 完走お疲れさまでした！間違えた問題をループ復習しましょう'}
                 </span>
                 <h2 class="text-xl font-black text-slate-900">${escapeHtml(qs.title)} 結果</h2>
                 <div class="text-4xl font-black ${passed ? 'text-emerald-600' : 'text-rose-600'}">
                   ${correct} <span class="text-lg text-slate-500">/ ${total}問正解 (${rate}%)</span>
                 </div>
                 <p class="text-xs text-slate-500">解答数: ${answered}問 ｜ このスマホブラウザの個人成績カルテに保存されました</p>
+              </div>
+
+              <!-- 完走ねぎらい＆褒め言葉メッセージ -->
+              <div class="p-4 rounded-2xl bg-gradient-to-r from-amber-50 to-rose-50 border border-rose-200 text-xs text-slate-800 leading-relaxed">
+                <div class="font-black text-rose-700 mb-1">🌟 最後までやり抜いたあなたへ</div>
+                ${rate >= 80
+                  ? '驚異的な正答率です！知識が正確に定着しています。この調子で他の回や科目も100%にしていきましょう！'
+                  : rate >= 60
+                    ? '見事に合格ライン(60%)を突破しました！今回間違えた問題だけをすぐ下のボタンで1周おさらいすると記憶が完璧になります！'
+                    : '最後まで解き切った集中力が本当に素晴らしいです！間違えた問題は宝の山です。「間違えた問題だけループ」で解説を読みながらもう1周してみましょう！'}
               </div>
 
               <!-- 何周でもループできるアクションボタン群 -->
@@ -3353,28 +4083,48 @@
       const cat = CATEGORIES.find(c => c.id === currentQ.category) || CATEGORIES[0];
       const sticky = state.studentStickies[currentQ.id];
       const showExplanationBox = (ans !== undefined) || qs.peekExplanation;
+      const answeredCountInSession = Object.keys(qs.answers).length;
+      const sessionProgressPct = qs.questions.length > 0 ? Math.round(((qs.currentIndex + 1) / qs.questions.length) * 100) : 0;
 
       return `
         <div class="max-w-2xl mx-auto space-y-4 animate-fadeIn">
           <!-- 上部進行バー -->
-          <div class="bg-white rounded-2xl p-3.5 shadow-sm border border-slate-200 flex items-center justify-between gap-2">
-            <button type="button" onclick="window.appActions.closeQuizSession()"
-              class="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center gap-1">
-              <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i> 終了
-            </button>
-            <div class="text-xs font-black text-slate-800 truncate">
-              ${escapeHtml(qs.title)} (${qs.currentIndex + 1} / ${qs.questions.length})
+          <div class="bg-white rounded-2xl p-3.5 shadow-sm border border-slate-200 space-y-2">
+            <div class="flex items-center justify-between gap-2">
+              <button type="button" onclick="window.appActions.closeQuizSession()"
+                class="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center gap-1">
+                <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i> 中断して戻る（続き保存）
+              </button>
+              <div class="text-xs font-black text-slate-800 truncate">
+                ${escapeHtml(qs.title)} (${qs.currentIndex + 1} / ${qs.questions.length}問目)
+              </div>
+              <button type="button" onclick="window.appActions.toggleJumpGrid()"
+                class="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center gap-1">
+                <i data-lucide="grid" class="w-3.5 h-3.5"></i> 一覧
+              </button>
             </div>
-            <button type="button" onclick="window.appActions.toggleJumpGrid()"
-              class="px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center gap-1">
-              <i data-lucide="grid" class="w-3.5 h-3.5"></i> 一覧
-            </button>
+            <!-- セッション内進捗バー -->
+            <div class="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+              <div class="h-full bg-gradient-to-r from-rose-500 to-amber-500 transition-all duration-300" style="width: ${sessionProgressPct}%"></div>
+            </div>
           </div>
+
+          <!-- キリのいいところ（5問ごと・連勝・累計55問など）での褒め言葉バナー -->
+          ${qs.lastPraise ? `
+            <div class="bg-gradient-to-r ${qs.lastPraise.colorClass} rounded-2xl p-4 shadow-md animate-fadeIn space-y-1">
+              <div class="flex items-center justify-between gap-2">
+                <span class="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-white/20">${qs.lastPraise.badge}</span>
+                <span class="text-[11px] font-bold opacity-90">今回 ${answeredCountInSession}問解答済</span>
+              </div>
+              <div class="text-sm font-black">${qs.lastPraise.title}</div>
+              <p class="text-xs opacity-95 leading-relaxed">${qs.lastPraise.message}</p>
+            </div>
+          ` : ''}
 
           ${state.showJumpGrid ? `
             <div class="bg-white rounded-2xl p-4 shadow-sm border border-slate-200">
               <div class="flex items-center justify-between mb-2">
-                <span class="text-xs font-bold text-slate-600">問題番号ジャンプ</span>
+                <span class="text-xs font-bold text-slate-600">問題番号ジャンプ（好きな問題から再開できます）</span>
                 <button type="button" onclick="window.appActions.finishQuizSession()"
                   class="text-xs font-bold text-rose-600 underline">ここまでの結果を集計する</button>
               </div>
@@ -3464,7 +4214,7 @@
                     ${ans === undefined
                       ? `正解は（${currentQ.correctIndex + 1}）です`
                       : ans.isCorrect
-                        ? '正解！「定着済」に記録されました'
+                        ? '正解！「定着済」に記録されました👏'
                         : `不正解… 正解は（${currentQ.correctIndex + 1}）です（「要復習」に登録されました）`}
                   </div>
                 </div>
